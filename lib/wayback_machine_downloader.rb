@@ -272,31 +272,45 @@ class WaybackMachineDownloader
       file_path = file_path.gsub(/[:*?&=<>\\|]/) {|s| '%' + s.ord.to_s(16) }
     end
     unless File.exist? file_path
-      begin
-        structure_dir_path dir_path
-        open(file_path, "wb") do |file|
-          begin
-            http.get(URI("https://web.archive.org/web/#{file_timestamp}id_/#{file_url}")) do |body|
-              file.write(body)
+        begin
+          structure_dir_path dir_path
+          download_success = false
+          attempts = 0
+          while !download_success && attempts < 2
+            attempts += 1
+            begin
+              response = http.get(URI("https://web.archive.org/web/#{file_timestamp}id_/#{file_url}"))
+              if response.code.to_i == 429
+                puts "Received 429 Too Many Requests for #{file_url}. Waiting 60 seconds before retrying..."
+                sleep 60
+                next
+              elsif response.code.to_i >= 200 && response.code.to_i < 300
+                open(file_path, "wb") { |file| file.write(response.body) }
+                download_success = true
+              else
+                puts "Failed to download #{file_url}: HTTP #{response.code}"
+                break
+              end
+            rescue OpenURI::HTTPError => e
+              puts "#{file_url} # #{e}"
+              if @all
+                open(file_path, "wb") { |file| file.write(e.io.read) }
+                puts "#{file_path} saved anyway."
+                download_success = true
+              end
+            rescue StandardError => e
+              puts "#{file_url} # #{e}"
+              break
             end
-          rescue OpenURI::HTTPError => e
-            puts "#{file_url} # #{e}"
-            if @all
-              file.write(e.io.read)
-              puts "#{file_path} saved anyway."
-            end
-          rescue StandardError => e
-            puts "#{file_url} # #{e}"
+          end
+        rescue StandardError => e
+          puts "#{file_url} # #{e}"
+        ensure
+          if not @all and File.exist?(file_path) and File.size(file_path) == 0
+            File.delete(file_path)
+            puts "#{file_path} was empty and was removed."
           end
         end
-      rescue StandardError => e
-        puts "#{file_url} # #{e}"
-      ensure
-        if not @all and File.exist?(file_path) and File.size(file_path) == 0
-          File.delete(file_path)
-          puts "#{file_path} was empty and was removed."
-        end
-      end
       semaphore.synchronize do
         @processed_file_count += 1
         puts "#{file_url} -> #{file_path} (#{@processed_file_count}/#{file_list_by_timestamp.size})"
